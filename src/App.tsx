@@ -96,13 +96,34 @@ export default function App() {
             <ArrowDown className="w-6 h-6 text-emerald-500" />
           </div>
 
-          <a 
-            href="https://smrturl.co/6367a65"
-            className="group relative flex items-center justify-center w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold text-xl py-3.5 rounded-2xl shadow-lg shadow-emerald-500/30 transition-all active:scale-[0.98] gap-2"
-          >
-            <Phone className="w-6 h-6" />
-            ادخل رقم هاتفك من هنا
-          </a>
+          <div className="relative w-full">
+            {/* Glow effect behind the button */}
+            <div className="absolute inset-0 bg-emerald-400 rounded-2xl blur-lg opacity-40 animate-pulse"></div>
+            
+            <motion.a 
+              href="https://smrturl.co/6367a65"
+              animate={{ scale: [1, 1.02, 1] }}
+              transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
+              className="group relative flex items-center justify-center w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold text-xl py-4 rounded-2xl shadow-xl shadow-emerald-500/40 transition-all active:scale-[0.98] gap-2 overflow-hidden"
+            >
+              {/* Shine animation */}
+              <motion.div
+                className="absolute inset-0 w-1/2 bg-gradient-to-r from-transparent via-white/30 to-transparent skew-x-12"
+                animate={{ x: ['-200%', '300%'] }}
+                transition={{ repeat: Infinity, duration: 2.5, ease: "linear", repeatDelay: 1 }}
+              />
+              
+              {/* Ringing phone icon */}
+              <motion.div
+                animate={{ rotate: [0, -10, 10, -10, 10, 0] }}
+                transition={{ repeat: Infinity, duration: 1.5, repeatDelay: 2 }}
+              >
+                <Phone className="w-6 h-6 drop-shadow-md" />
+              </motion.div>
+              
+              <span className="relative z-10 drop-shadow-md">ادخل رقم هاتفك من هنا</span>
+            </motion.a>
+          </div>
           
           <div className="mt-4 flex items-center justify-center gap-2 text-xs font-semibold text-slate-400">
             <ShieldCheck className="w-4 h-4 text-emerald-500" />
