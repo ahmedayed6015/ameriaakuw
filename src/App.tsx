@@ -1,56 +1,62 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { Zap } from 'lucide-react';
 import AdminDashboard from './AdminDashboard';
 import LandingPage from './LandingPage';
-import Setup from './Setup';
+import { db } from './firebase';
+import { doc, getDoc } from 'firebase/firestore';
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const [password, setPassword] = useState('');
   const [isAuthorized, setIsAuthorized] = useState(() => {
-    return localStorage.getItem('admin_authorized') === 'true';
+    try {
+      return localStorage.getItem('admin_authorized') === 'true';
+    } catch (e) {
+      return false;
+    }
   });
-  const [isConfigured, setIsConfigured] = useState<boolean | null>(null);
+  const [correctPassword, setCorrectPassword] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const checkStatus = async () => {
+    const fetchSettings = async () => {
       try {
-        const res = await fetch('/api/index.php?action=get_stats');
-        if (res.ok) {
-          setIsConfigured(true);
+        const docRef = doc(db, 'settings', 'config');
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          setCorrectPassword(docSnap.data().adminPassword || 'admin123');
         } else {
-          setIsConfigured(false);
+          setCorrectPassword('admin123');
         }
       } catch (error) {
-        setIsConfigured(false);
+        console.error("Error fetching settings:", error);
       } finally {
         setIsLoading(false);
       }
     };
-    checkStatus();
+    fetchSettings();
   }, []);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    // في نسخة PHP، سنستخدم كلمة مرور بسيطة مؤقتاً أو نربطها بالقاعدة
-    if (password === 'admin123') {
+    if (password === correctPassword) {
       setIsAuthorized(true);
-      localStorage.setItem('admin_authorized', 'true');
+      try {
+        localStorage.setItem('admin_authorized', 'true');
+      } catch (e) {
+        console.error("Failed to save to localStorage", e);
+      }
     } else {
       alert('كلمة المرور خاطئة');
     }
   };
 
-  if (isLoading) {
+  if (isLoading && !isAuthorized) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
       </div>
     );
-  }
-
-  if (isConfigured === false) {
-    return <Navigate to="/setup" replace />;
   }
 
   if (isAuthorized) return <>{children}</>;
@@ -83,10 +89,20 @@ export default function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/setup" element={<Setup />} />
         <Route path="/adminahmed" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
         <Route path="/:slug" element={<LandingPage />} />
-        <Route path="/" element={<div className="min-h-screen bg-white"></div>} />
+        <Route path="/" element={
+          <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-4 text-center">
+            <div className="w-20 h-20 bg-blue-600 rounded-3xl flex items-center justify-center mb-6 shadow-2xl shadow-blue-500/20">
+              <Zap className="w-10 h-10 text-white" />
+            </div>
+            <h1 className="text-4xl font-black mb-4">نظام CPA PRO V2</h1>
+            <p className="text-slate-400 max-w-md">مرحباً بك في نظام إدارة عروض الـ CPA. يرجى التوجه إلى لوحة التحكم أو استخدام رابط العرض المباشر.</p>
+            <div className="mt-8 flex gap-4">
+              <a href="#/adminahmed" className="bg-blue-600 hover:bg-blue-700 px-8 py-3 rounded-xl font-bold transition-all">لوحة التحكم</a>
+            </div>
+          </div>
+        } />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Router>

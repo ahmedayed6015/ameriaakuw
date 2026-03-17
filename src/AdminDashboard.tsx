@@ -1,7 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { collection, addDoc, getDocs, updateDoc, deleteDoc, doc, getDoc, setDoc, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { db, auth } from './firebase';
 import { Plus, Trash2, Edit2, Settings as SettingsIcon, ExternalLink, Copy, Check, Eye, Globe, Smartphone, Layout, BarChart3, Shield, Zap, Search, X, AlertCircle, TrendingUp, Users, MousePointer2, Monitor, ChevronDown, LogOut } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
 
 const COUNTRIES = [
   "Saudi Arabia", "United Arab Emirates", "Kuwait", "Qatar", "Bahrain", "Oman", 
@@ -22,11 +26,61 @@ const THEMES = [
   { name: 'وردي ناعم', bg: 'bg-slate-50', primary: 'from-pink-500 to-rose-400', secondary: 'pink-500', text: 'text-slate-800', isDark: false },
   { name: 'رمادي معدني', bg: 'bg-slate-100', primary: 'from-slate-500 to-slate-700', secondary: 'slate-600', text: 'text-slate-900', isDark: false }
 ];
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string;
+    email?: string | null;
+    emailVerified?: boolean;
+    isAnonymous?: boolean;
+    tenantId?: string | null;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  alert(`خطأ في قاعدة البيانات: ${errInfo.error}`);
+  throw new Error(JSON.stringify(errInfo));
 }
 
 interface SmartLink {
@@ -78,9 +132,7 @@ export default function AdminDashboard() {
     adminPassword: '',
     globalSmartLinks: []
   });
-  const [activeTab, setActiveTab] = useState<'pages' | 'settings' | 'stats' | 'database'>('pages');
-  const [dbConfig, setDbConfig] = useState({ host: '', user: '', password: '', database: '' });
-  const [dbStatus, setDbStatus] = useState<'connected' | 'disconnected' | 'testing'>('disconnected');
+  const [activeTab, setActiveTab] = useState<'pages' | 'settings' | 'stats'>('pages');
   const [searchQuery, setSearchQuery] = useState('');
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -104,93 +156,60 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => {
-    const fetchDbConfig = async () => {
-      try {
-        const res = await fetch('/api/index.php?action=get_stats');
-        if (res.ok) {
-          setDbStatus('connected');
-        } else {
-          setDbStatus('disconnected');
-        }
-      } catch (e) {
-        console.error("Failed to fetch DB config", e);
-      }
-    };
-    fetchDbConfig();
-  }, []);
+    const unsubscribePages = onSnapshot(query(collection(db, 'pages'), orderBy('createdAt', 'desc')), (snapshot) => {
+      setPages(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Page)));
+    });
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [pagesRes, statsRes] = await Promise.all([
-          fetch('/api/index.php?action=get_pages'),
-          fetch('/api/index.php?action=get_stats')
-        ]);
-        
-        if (!pagesRes.ok) {
-          setDbStatus('disconnected');
-          return;
-        }
-
-        setDbStatus('connected');
-        const pagesData = await pagesRes.json();
-        const statsData = await statsRes.json();
-        
-        setPages(pagesData.map((p: any) => ({
-          ...p,
-          theme: typeof p.theme === 'string' ? JSON.parse(p.theme) : (p.theme || THEMES[0]),
-          smartLinks: typeof p.smartLinks === 'string' ? JSON.parse(p.smartLinks) : (p.smartLinks || []),
-          stats: typeof p.stats === 'string' ? JSON.parse(p.stats) : (p.stats || {})
-        })));
-        
-        // في PHP، سنحمل الإعدادات من الإحصائيات أو ملف منفصل
+    const unsubscribeSettings = onSnapshot(doc(db, 'settings', 'config'), (doc) => {
+      if (doc.exists()) {
+        const data = doc.data() as GlobalSettings;
         setSettings({
-          globalRedirectUrl: '', 
-          globalSmartLinks: []
+          ...data,
+          globalSmartLinks: data.globalSmartLinks || []
         });
-      } catch (error) {
-        console.error("Fetch failed", error);
       }
-    };
+    });
 
-    fetchData();
+    return () => {
+      unsubscribePages();
+      unsubscribeSettings();
+    };
   }, []);
+
+  const generateSlug = () => {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < 24; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return `v-${result}`;
+  };
 
   const handleSavePage = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
     try {
-      const slug = formData.slug || generateSlug();
-      const res = await fetch('/api/index.php?action=create_page', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          slug: slug,
-          target_url: formData.redirectUrl || '',
-          title: formData.title,
-          description: formData.prize,
-          theme: JSON.stringify(formData.theme),
-          smartLinks: JSON.stringify(formData.smartLinks || [])
-        })
-      });
-
-      if (!res.ok) throw new Error('Save failed');
-
+      if (isEditing && isEditing !== 'new') {
+        await updateDoc(doc(db, 'pages', isEditing), formData);
+      } else {
+        const slug = generateSlug();
+        await addDoc(collection(db, 'pages'), {
+          ...formData,
+          slug,
+          createdAt: new Date().toISOString()
+        });
+      }
       setIsEditing(null);
-      showToast('تم حفظ الصفحة بنجاح');
-      
-      // Refresh list
-      const pagesRes = await fetch('/api/index.php?action=get_pages');
-      const pagesData = await pagesRes.json();
-      setPages(pagesData.map((p: any) => ({
-        ...p,
-        theme: typeof p.theme === 'string' ? JSON.parse(p.theme) : (p.theme || THEMES[0]),
-        smartLinks: typeof p.smartLinks === 'string' ? JSON.parse(p.smartLinks) : (p.smartLinks || []),
-        stats: typeof p.stats === 'string' ? JSON.parse(p.stats) : (p.stats || {})
-      })));
+      showToast(isEditing && isEditing !== 'new' ? 'تم تحديث الصفحة بنجاح' : 'تم إنشاء الصفحة بنجاح');
+      setFormData({
+        title: '',
+        prize: '500,000',
+        image: '',
+        theme: THEMES[0],
+        forceExternalBrowser: false
+      });
     } catch (error) {
-      console.error("Save error", error);
-      showToast('خطأ في الحفظ', 'error');
+      handleFirestoreError(error, isEditing && isEditing !== 'new' ? OperationType.UPDATE : OperationType.CREATE, 'pages');
     } finally {
       setIsSaving(false);
     }
@@ -199,67 +218,20 @@ export default function AdminDashboard() {
   const handleDeletePage = async () => {
     if (!confirmDelete) return;
     try {
-      await fetch(`/api/index.php?action=delete_page&id=${confirmDelete}`, { method: 'GET' });
+      await deleteDoc(doc(db, 'pages', confirmDelete));
       showToast('تم حذف الصفحة بنجاح');
       setConfirmDelete(null);
-      setPages(pages.filter(p => p.id !== confirmDelete));
     } catch (error) {
-      console.error("Delete error", error);
+      handleFirestoreError(error, OperationType.DELETE, `pages/${confirmDelete}`);
     }
   };
 
   const handleSaveSettings = async () => {
     try {
-      await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings)
-      });
+      await setDoc(doc(db, 'settings', 'config'), settings, { merge: true });
       showToast('تم حفظ الإعدادات العامة بنجاح');
     } catch (error) {
-      console.error("Settings save error", error);
-    }
-  };
-
-  const handleTestDb = async () => {
-    setDbStatus('testing');
-    try {
-      const res = await fetch('/api/db-test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(dbConfig)
-      });
-      if (res.ok) {
-        showToast('تم الاتصال بقاعدة البيانات بنجاح', 'success');
-      } else {
-        const data = await res.json();
-        showToast(`فشل الاتصال: ${data.error}`, 'error');
-      }
-    } catch (e) {
-      showToast('خطأ في الاتصال بالسيرفر', 'error');
-    } finally {
-      setDbStatus('disconnected'); // Reset to disconnected state after test
-    }
-  };
-
-  const handleSaveDbConfig = async () => {
-    try {
-      const res = await fetch('/api/db-config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(dbConfig)
-      });
-      if (res.ok) {
-        showToast('تم حفظ إعدادات قاعدة البيانات وتطبيقها', 'success');
-        setDbStatus('connected');
-        // Reload data
-        window.location.reload();
-      } else {
-        const data = await res.json();
-        showToast(`فشل الحفظ: ${data.error}`, 'error');
-      }
-    } catch (e) {
-      showToast('خطأ في حفظ الإعدادات', 'error');
+      handleFirestoreError(error, OperationType.WRITE, 'settings/config');
     }
   };
 
@@ -291,7 +263,6 @@ export default function AdminDashboard() {
               { id: 'pages', label: 'إدارة الصفحات', icon: Layout },
               { id: 'settings', label: 'الإعدادات الذكية', icon: Globe },
               { id: 'stats', label: 'الإحصائيات', icon: BarChart3 },
-              { id: 'database', label: 'قاعدة البيانات', icon: Shield },
             ].map((item) => (
               <button
                 key={item.id}
@@ -330,7 +301,7 @@ export default function AdminDashboard() {
         <div className="flex flex-col md:flex-row justify-between items-center mb-10 gap-6">
           <div>
             <h1 className="text-3xl font-black text-slate-900 mb-2">
-              {activeTab === 'pages' ? 'إدارة صفحات الهبوط' : activeTab === 'settings' ? 'الإعدادات العالمية' : activeTab === 'stats' ? 'تحليلات النظام' : 'إعدادات قاعدة البيانات'}
+              {activeTab === 'pages' ? 'إدارة صفحات الهبوط' : activeTab === 'settings' ? 'الإعدادات العالمية' : 'تحليلات النظام'}
             </h1>
             <p className="text-slate-500 font-medium">مرحباً بك في النسخة المطورة من لوحة التحكم</p>
           </div>
@@ -357,16 +328,6 @@ export default function AdminDashboard() {
         </div>
 
         {/* Stats Grid */}
-        {dbStatus === 'disconnected' && (
-          <div className="bg-red-50 border border-red-200 p-6 rounded-3xl mb-10 flex items-center gap-4 text-red-700">
-            <AlertCircle className="w-8 h-8 shrink-0" />
-            <div>
-              <h3 className="font-black text-lg">قاعدة البيانات غير متصلة!</h3>
-              <p className="text-sm font-bold opacity-80">يرجى التوجه إلى تبويب "قاعدة البيانات" لضبط الإعدادات ليعمل النظام بشكل صحيح.</p>
-            </div>
-          </div>
-        )}
-
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
           {[
             { label: 'إجمالي الصفحات', value: pages.length, icon: Layout, color: 'blue' },
@@ -391,88 +352,6 @@ export default function AdminDashboard() {
             </div>
           ))}
         </div>
-
-        {activeTab === 'database' && (
-          <div className="max-w-4xl space-y-8">
-            <section className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-slate-200">
-              <div className="flex items-center gap-3 mb-8">
-                <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600">
-                  <Shield className="w-5 h-5" />
-                </div>
-                <h2 className="text-xl font-black text-slate-900">إعدادات MySQL (cPanel)</h2>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                <div className="space-y-2">
-                  <label className="text-sm font-black text-slate-700">Host (غالباً localhost)</label>
-                  <input 
-                    type="text" 
-                    value={dbConfig.host}
-                    onChange={(e) => setDbConfig({...dbConfig, host: e.target.value})}
-                    placeholder="localhost"
-                    className="w-full p-4 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all bg-slate-50/50"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-black text-slate-700">اسم مستخدم قاعدة البيانات</label>
-                  <input 
-                    type="text" 
-                    value={dbConfig.user}
-                    onChange={(e) => setDbConfig({...dbConfig, user: e.target.value})}
-                    placeholder="db_user"
-                    className="w-full p-4 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all bg-slate-50/50"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-black text-slate-700">كلمة مرور قاعدة البيانات</label>
-                  <input 
-                    type="password" 
-                    value={dbConfig.password}
-                    onChange={(e) => setDbConfig({...dbConfig, password: e.target.value})}
-                    placeholder="********"
-                    className="w-full p-4 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all bg-slate-50/50"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-black text-slate-700">اسم قاعدة البيانات</label>
-                  <input 
-                    type="text" 
-                    value={dbConfig.database}
-                    onChange={(e) => setDbConfig({...dbConfig, database: e.target.value})}
-                    placeholder="db_name"
-                    className="w-full p-4 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all bg-slate-50/50"
-                  />
-                </div>
-              </div>
-
-              <div className="flex flex-col md:flex-row gap-4">
-                <button 
-                  onClick={handleTestDb}
-                  disabled={dbStatus === 'testing'}
-                  className="bg-slate-100 text-slate-900 px-10 py-4 rounded-2xl font-black hover:bg-slate-200 transition-all disabled:opacity-50"
-                >
-                  {dbStatus === 'testing' ? 'جاري الاختبار...' : 'اختبار الاتصال'}
-                </button>
-                <button 
-                  onClick={handleSaveDbConfig}
-                  className="bg-blue-600 text-white px-10 py-4 rounded-2xl font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-100"
-                >
-                  حفظ وتطبيق الإعدادات
-                </button>
-              </div>
-              
-              <div className="mt-8 p-6 bg-amber-50 rounded-3xl border border-amber-100">
-                <div className="flex items-center gap-3 text-amber-800 mb-2">
-                  <AlertCircle className="w-5 h-5" />
-                  <h4 className="font-black">تنبيه هام</h4>
-                </div>
-                <p className="text-xs text-amber-700 font-bold leading-relaxed">
-                  عند حفظ الإعدادات، سيقوم النظام بمحاولة الاتصال بقاعدة البيانات وإنشاء الجداول اللازمة تلقائياً. تأكد من صحة البيانات لتجنب توقف النظام.
-                </p>
-              </div>
-            </section>
-          </div>
-        )}
 
         {activeTab === 'pages' && (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
