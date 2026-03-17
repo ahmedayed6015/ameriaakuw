@@ -24,5 +24,10 @@ export default defineConfig(({mode}) => {
     optimizeDeps: {
       include: ['firebase/app', 'firebase/firestore', 'firebase/auth'],
     },
+    build: {
+      commonjsOptions: {
+        include: [/firebase/, /node_modules/],
+      },
+    },
   };
 });
